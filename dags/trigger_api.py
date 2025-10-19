@@ -21,6 +21,7 @@ def call_spring_api():
     url = f"{API_SERVER_HOST}/v1/external/alarms/publish"
     try:
         response = requests.get(url, timeout=10)
+        print(response)
         if response.status_code == 200:
             print("✅ API 호출 성공")
         else:
