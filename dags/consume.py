@@ -258,7 +258,7 @@ def kafka_batch_dag():
                         try:
                             payload = item.copy()
                             if item.get("collectedPrice"):
-                                async with session.post(f"{API_SERVER_HOST}/api/v1/external/email", json=payload) as resp:
+                                async with session.post(f"{API_SERVER_HOST}/v1/external/email", json=payload) as resp:
                                     item["emailed"] = (resp.status == 200)
                                     if not item["emailed"]:
                                         add_error(item, "send_email", f"http {resp.status}")

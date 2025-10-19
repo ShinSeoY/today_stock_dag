@@ -17,7 +17,7 @@ default_args = {
 }
 
 def call_spring_api():
-    url = f"{API_SERVER_HOST}/api/v1/external/alarms/publish"
+    url = f"{API_SERVER_HOST}/v1/external/alarms/publish"
     try:
         response = requests.get(url, timeout=10)
         if response.status_code == 200:
