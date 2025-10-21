@@ -163,7 +163,7 @@ def kafka_batch_dag():
             consumer = KafkaConsumer(
                 KAFKA_TOPIC,
                 bootstrap_servers=KAFKA_BROKERS,
-                group_id='airflow-consume',
+                group_id='airflow-consume-p1',
                 auto_offset_reset='earliest',
                 enable_auto_commit=True,
                 auto_commit_interval_ms=1000,
@@ -179,6 +179,7 @@ def kafka_batch_dag():
                 for _, msgs in polled.items():
                     for m in msgs:
                         data = m.value
+                        print('----vvvv : {data}')
                         missing, ok = has_required_keys(data)
                         if not ok:
                             add_error(data, "poll_msg", f"missing keys: {missing}")
