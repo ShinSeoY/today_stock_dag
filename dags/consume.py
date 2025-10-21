@@ -160,47 +160,102 @@ def kafka_batch_dag():
     @task
     def poll_msg():
         try:
+            print("=== Kafka Consumer 시작 ===")
             consumer = KafkaConsumer(
                 KAFKA_TOPIC,
                 bootstrap_servers=KAFKA_BROKERS,
-                group_id='airflow-consume-p1',
+                group_id='airflow-consume-new',  # 완전히 새로운 그룹
                 auto_offset_reset='earliest',
-                enable_auto_commit=True,
-                auto_commit_interval_ms=1000,
+                enable_auto_commit=False,  # 수동 커밋으로 변경
                 value_deserializer=lambda x: json.loads(x.decode('utf-8')),
                 fetch_min_bytes=1,
-                fetch_max_wait_ms=500
+                fetch_max_wait_ms=500,
+                consumer_timeout_ms=10000  # 10초 타임아웃 추가
             )
+            
+            # 파티션 할당 대기
+            consumer.poll(timeout_ms=0)
+            partitions = consumer.assignment()
+            print(f"할당된 파티션: {partitions}")
+            
+            # 각 파티션의 오프셋 정보 출력
+            for tp in partitions:
+                start_offset = consumer.beginning_offsets([tp])[tp]
+                end_offset = consumer.end_offsets([tp])[tp]
+                current_position = consumer.position(tp)
+                print(f"파티션 {tp.partition}:")
+                print(f"  - 시작 오프셋: {start_offset}")
+                print(f"  - 현재 위치: {current_position}")
+                print(f"  - 끝 오프셋: {end_offset}")
+                print(f"  - 읽을 수 있는 메시지: {end_offset - current_position}개")
+            
             end = time.monotonic() + TIMEOUT
             buffer, batches = [], []
+            message_count = 0
 
+            print("\n=== 메시지 폴링 시작 ===")
             while time.monotonic() < end:
                 polled = consumer.poll(timeout_ms=1000)
-                for _, msgs in polled.items():
+                
+                if not polled:
+                    print(".", end="", flush=True)  # 진행상황 표시
+                    # 메시지가 없으면 조기 종료
+                    if message_count == 0 and time.monotonic() - (end - TIMEOUT) > 10:
+                        print("\n10초 동안 메시지 없음 - 폴링 종료")
+                        break
+                    continue
+                
+                print(f"\n폴링 성공! {len(polled)}개 파티션에서 메시지 수신")
+                
+                for tp, msgs in polled.items():
+                    print(f"\n파티션 {tp.partition}에서 {len(msgs)}개 메시지:")
                     for m in msgs:
+                        message_count += 1
                         data = m.value
-                        print('----vvvv : {data}')
+                        print(f"  메시지 #{message_count}:")
+                        print(f"    오프셋: {m.offset}")
+                        print(f"    데이터: {data}")
+                        
                         missing, ok = has_required_keys(data)
                         if not ok:
+                            print(f"    ⚠️  누락된 키: {missing}")
                             add_error(data, "poll_msg", f"missing keys: {missing}")
+                        
                         buffer.append(data)
-                        if len(buffer) == MAX_BUFFER_SIZE:
-                            batches.append(buffer.copy()); 
+                        
+                        if len(buffer) >= MAX_BUFFER_SIZE:
+                            print(f"\n배치 #{len(batches)+1} 생성 (크기: {len(buffer)})")
+                            batches.append(buffer.copy())
                             buffer.clear()
 
             if buffer:
+                print(f"\n마지막 배치 생성 (크기: {len(buffer)})")
                 batches.append(buffer.copy())
 
-            print(batches)
+            print(f"\n\n=== 폴링 완료 ===")
+            print(f"총 메시지 수: {message_count}")
+            print(f"총 배치 수: {len(batches)}")
+            print(f"배치 내용:")
+            for i, batch in enumerate(batches):
+                print(f"  배치 #{i+1}: {len(batch)}개 항목")
+            
+            # 메시지를 읽었으면 커밋
+            if message_count > 0:
+                consumer.commit()
+                print("오프셋 커밋 완료")
+            
             consumer.close()
-            return batches  # List[List[dict]]
+            print("Consumer 종료")
+            
+            return batches
 
         except Exception as e:
-            # 폴링 단계 전체 실패 → DLQ로 보낼 수 있도록 에러 item을 만들어 반환
+            print(f"\n❌ 에러 발생: {str(e)}")
+            import traceback
+            traceback.print_exc()
             err_item = {"errors": [], "stage": "poll_msg"}
             add_error(err_item, "poll_msg", e)
             return [[err_item]]
-
 
     @task
     def process_batch(batch: list):
