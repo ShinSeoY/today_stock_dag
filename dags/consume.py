@@ -1,6 +1,7 @@
 from airflow.decorators import dag, task
 from datetime import datetime, timedelta, timezone
 from kafka import KafkaConsumer, KafkaProducer
+from kafka import TopicPartition
 from playwright.sync_api import sync_playwright
 import json, os, time, asyncio, aiohttp
 from playwright.async_api import async_playwright, TimeoutError as PwTimeout
@@ -160,97 +161,109 @@ def kafka_batch_dag():
     @task
     def poll_msg():
         try:
-            print("=== Kafka Consumer 시작 ===")
+            print("=== Kafka Consumer 시작 (수동 할당 방식) ===")
             consumer = KafkaConsumer(
-                KAFKA_TOPIC,
                 bootstrap_servers=KAFKA_BROKERS,
-                group_id='airflow-consume-new',  # 완전히 새로운 그룹
+                # group_id 제거 - 수동 할당에는 불필요
                 auto_offset_reset='earliest',
-                enable_auto_commit=False,  # 수동 커밋으로 변경
+                enable_auto_commit=False,
                 value_deserializer=lambda x: json.loads(x.decode('utf-8')),
                 fetch_min_bytes=1,
                 fetch_max_wait_ms=500,
-                consumer_timeout_ms=10000  # 10초 타임아웃 추가
+                consumer_timeout_ms=10000
             )
             
-            # 파티션 할당 대기
-            consumer.poll(timeout_ms=0)
-            partitions = consumer.assignment()
-            print(f"할당된 파티션: {partitions}")
+            # 🔑 파티션 수동 할당 - Coordinator 불필요!
+            tp = TopicPartition(KAFKA_TOPIC, 0)
+            consumer.assign([tp])
+            consumer.seek_to_beginning(tp)
             
-            # 각 파티션의 오프셋 정보 출력
-            for tp in partitions:
-                start_offset = consumer.beginning_offsets([tp])[tp]
-                end_offset = consumer.end_offsets([tp])[tp]
-                current_position = consumer.position(tp)
-                print(f"파티션 {tp.partition}:")
-                print(f"  - 시작 오프셋: {start_offset}")
-                print(f"  - 현재 위치: {current_position}")
-                print(f"  - 끝 오프셋: {end_offset}")
-                print(f"  - 읽을 수 있는 메시지: {end_offset - current_position}개")
+            print(f"✓ 파티션 수동 할당: {consumer.assignment()}")
             
-            end = time.monotonic() + TIMEOUT
+            # 오프셋 정보 확인
+            start_offset = consumer.beginning_offsets([tp])[tp]
+            end_offset = consumer.end_offsets([tp])[tp]
+            current_position = consumer.position(tp)
+            
+            print(f"\n📊 파티션 0 정보:")
+            print(f"  시작 오프셋: {start_offset}")
+            print(f"  현재 위치: {current_position}")
+            print(f"  끝 오프셋: {end_offset}")
+            print(f"  읽을 수 있는 메시지: {end_offset - current_position}개")
+            
+            if end_offset - current_position == 0:
+                print("\n⚠️  토픽에 메시지가 없습니다!")
+                consumer.close()
+                return []
+            
+            end_time = time.monotonic() + TIMEOUT
             buffer, batches = [], []
             message_count = 0
 
             print("\n=== 메시지 폴링 시작 ===")
-            while time.monotonic() < end:
+            while time.monotonic() < end_time:
                 polled = consumer.poll(timeout_ms=1000)
                 
                 if not polled:
-                    print(".", end="", flush=True)  # 진행상황 표시
-                    # 메시지가 없으면 조기 종료
-                    if message_count == 0 and time.monotonic() - (end - TIMEOUT) > 10:
-                        print("\n10초 동안 메시지 없음 - 폴링 종료")
+                    # 메시지를 이미 읽었으면 종료
+                    if message_count > 0:
+                        print("\n✓ 모든 메시지 읽기 완료!")
                         break
+                    # 10초 대기 후 종료
+                    if time.monotonic() - (end_time - TIMEOUT) > 10:
+                        print("\n⚠️  10초 동안 메시지 없음 - 종료")
+                        break
+                    print(".", end="", flush=True)
                     continue
                 
-                print(f"\n폴링 성공! {len(polled)}개 파티션에서 메시지 수신")
+                print(f"\n✅ 폴링 성공!")
                 
-                for tp, msgs in polled.items():
-                    print(f"\n파티션 {tp.partition}에서 {len(msgs)}개 메시지:")
+                for tp_key, msgs in polled.items():
+                    print(f"\n파티션 {tp_key.partition}에서 {len(msgs)}개 메시지 수신:")
                     for m in msgs:
                         message_count += 1
                         data = m.value
+                        
                         print(f"  메시지 #{message_count}:")
                         print(f"    오프셋: {m.offset}")
-                        print(f"    데이터: {data}")
+                        print(f"    키: {list(data.keys()) if isinstance(data, dict) else 'N/A'}")
                         
                         missing, ok = has_required_keys(data)
                         if not ok:
                             print(f"    ⚠️  누락된 키: {missing}")
                             add_error(data, "poll_msg", f"missing keys: {missing}")
+                        else:
+                            print(f"    ✓ 필수 키 확인 완료")
                         
                         buffer.append(data)
                         
                         if len(buffer) >= MAX_BUFFER_SIZE:
-                            print(f"\n배치 #{len(batches)+1} 생성 (크기: {len(buffer)})")
+                            print(f"\n📦 배치 #{len(batches)+1} 생성 (크기: {len(buffer)})")
                             batches.append(buffer.copy())
                             buffer.clear()
 
             if buffer:
-                print(f"\n마지막 배치 생성 (크기: {len(buffer)})")
+                print(f"\n📦 마지막 배치 생성 (크기: {len(buffer)})")
                 batches.append(buffer.copy())
 
             print(f"\n\n=== 폴링 완료 ===")
             print(f"총 메시지 수: {message_count}")
             print(f"총 배치 수: {len(batches)}")
-            print(f"배치 내용:")
-            for i, batch in enumerate(batches):
-                print(f"  배치 #{i+1}: {len(batch)}개 항목")
             
-            # 메시지를 읽었으면 커밋
-            if message_count > 0:
-                consumer.commit()
-                print("오프셋 커밋 완료")
+            if batches:
+                print(f"배치 내용:")
+                for i, batch in enumerate(batches):
+                    print(f"  배치 #{i+1}: {len(batch)}개 항목")
+                    if batch:
+                        print(f"    첫 항목: {batch[0]}")
             
             consumer.close()
-            print("Consumer 종료")
+            print("✓ Consumer 정상 종료")
             
             return batches
 
         except Exception as e:
-            print(f"\n❌ 에러 발생: {str(e)}")
+            print(f"\n❌ 에러: {str(e)}")
             import traceback
             traceback.print_exc()
             err_item = {"errors": [], "stage": "poll_msg"}
