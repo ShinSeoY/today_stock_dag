@@ -1,6 +1,6 @@
 from airflow.decorators import dag, task
 from datetime import datetime, timedelta, timezone
-from kafka import KafkaConsumer, KafkaProducer
+from kafka import KafkaConsumer, KafkaProducer, TopicPartition
 from playwright.sync_api import sync_playwright
 import json, os, time, asyncio, aiohttp
 from playwright.async_api import async_playwright, TimeoutError as PwTimeout
@@ -158,49 +158,49 @@ def kafka_batch_dag():
     
     # Kafka 메시지 배치 단위로 수신
     @task
+
     def poll_msg():
-        try:
-            consumer = KafkaConsumer(
-                KAFKA_TOPIC,
-                bootstrap_servers=KAFKA_BROKERS,
-                group_id='airflow-consume-p2',
-                auto_offset_reset='earliest',
-                enable_auto_commit=True,
-                auto_commit_interval_ms=1000,
-                value_deserializer=lambda x: json.loads(x.decode('utf-8')),
-                fetch_min_bytes=1,
-                fetch_max_wait_ms=500
-            )
-            end = time.monotonic() + TIMEOUT
-            buffer, batches = [], []
+        consumer = KafkaConsumer(
+            bootstrap_servers=KAFKA_BROKERS,
+            group_id='airflow-consume-p2',              # 임시 그룹
+            enable_auto_commit=False,                   # 디버깅시 수동 커밋
+            auto_offset_reset='earliest',
+            value_deserializer=lambda x: json.loads(x.decode('utf-8')),
+        )
 
-            while time.monotonic() < end:
-                polled = consumer.poll(timeout_ms=1000)
-                for _, msgs in polled.items():
-                    for m in msgs:
-                        data = m.value
-                        print('----vvvv : {data}')
-                        missing, ok = has_required_keys(data)
-                        if not ok:
-                            add_error(data, "poll_msg", f"missing keys: {missing}")
-                        buffer.append(data)
-                        if len(buffer) == MAX_BUFFER_SIZE:
-                            batches.append(buffer.copy()); 
-                            buffer.clear()
+        tp = TopicPartition(KAFKA_TOPIC, 0)
+        consumer.assign([tp])
 
-            if buffer:
-                batches.append(buffer.copy())
+        # 시작/끝 오프셋 로깅
+        begin = consumer.beginning_offsets([tp])[tp]
+        end   = consumer.end_offsets([tp])[tp]
+        print(f"[dbg] begin={begin}, end={end}")
 
-            print(batches)
-            consumer.close()
-            return batches  # List[List[dict]]
+        # 정말 처음부터 읽기
+        consumer.seek(tp, begin)
 
-        except Exception as e:
-            # 폴링 단계 전체 실패 → DLQ로 보낼 수 있도록 에러 item을 만들어 반환
-            err_item = {"errors": [], "stage": "poll_msg"}
-            add_error(err_item, "poll_msg", e)
-            return [[err_item]]
+        end_time = time.monotonic() + 60
+        buffer, batches = [], []
+        while time.monotonic() < end_time:
+            polled = consumer.poll(timeout_ms=1000, max_records=100)
+            for _, msgs in polled.items():
+                for m in msgs:
+                    try:
+                        data = m.value  # 이미 역직렬화됨
+                    except Exception as e:
+                        print(f"[dbg] deser err: {e}")
+                        continue
+                    print(f"[dbg] got: {data}")  # 가시성
+                    buffer.append(data)
+                    if len(buffer) == MAX_BUFFER_SIZE:
+                        batches.append(buffer.copy()); buffer.clear()
 
+        if buffer:
+            batches.append(buffer.copy())
+
+        print(f"[dbg] batches={len(batches)}")
+        consumer.close()
+        return batches
 
     @task
     def process_batch(batch: list):
