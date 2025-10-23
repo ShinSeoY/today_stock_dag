@@ -185,14 +185,14 @@ def kafka_batch_dag():
             end_offset = consumer.end_offsets([tp])[tp]
             current_position = consumer.position(tp)
             
-            print(f"\n📊 파티션 0 정보:")
+            print(f"\n 파티션 0 정보:")
             print(f"  시작 오프셋: {start_offset}")
             print(f"  현재 위치: {current_position}")
             print(f"  끝 오프셋: {end_offset}")
             print(f"  읽을 수 있는 메시지: {end_offset - current_position}개")
             
             if end_offset - current_position == 0:
-                print("\n⚠️  토픽에 메시지가 없습니다!")
+                print("\n 토픽에 메시지가 없습니다!")
                 consumer.close()
                 return []
             
@@ -207,16 +207,16 @@ def kafka_batch_dag():
                 if not polled:
                     # 메시지를 이미 읽었으면 종료
                     if message_count > 0:
-                        print("\n✓ 모든 메시지 읽기 완료!")
+                        print("모든 메시지 읽기 완료!")
                         break
                     # 10초 대기 후 종료
                     if time.monotonic() - (end_time - TIMEOUT) > 10:
-                        print("\n⚠️  10초 동안 메시지 없음 - 종료")
+                        print("10초 동안 메시지 없음 - 종료")
                         break
                     print(".", end="", flush=True)
                     continue
                 
-                print(f"\n✅ 폴링 성공!")
+                print(f"\n 폴링 성공!")
                 
                 for tp_key, msgs in polled.items():
                     print(f"\n파티션 {tp_key.partition}에서 {len(msgs)}개 메시지 수신:")
@@ -230,7 +230,7 @@ def kafka_batch_dag():
                         
                         missing, ok = has_required_keys(data)
                         if not ok:
-                            print(f"    ⚠️  누락된 키: {missing}")
+                            print(f"    누락된 키: {missing}")
                             add_error(data, "poll_msg", f"missing keys: {missing}")
                         else:
                             print(f"    ✓ 필수 키 확인 완료")
@@ -238,12 +238,12 @@ def kafka_batch_dag():
                         buffer.append(data)
                         
                         if len(buffer) >= MAX_BUFFER_SIZE:
-                            print(f"\n📦 배치 #{len(batches)+1} 생성 (크기: {len(buffer)})")
+                            print(f"\n 배치 #{len(batches)+1} 생성 (크기: {len(buffer)})")
                             batches.append(buffer.copy())
                             buffer.clear()
 
             if buffer:
-                print(f"\n📦 마지막 배치 생성 (크기: {len(buffer)})")
+                print(f"\n 마지막 배치 생성 (크기: {len(buffer)})")
                 batches.append(buffer.copy())
 
             print(f"\n\n=== 폴링 완료 ===")
@@ -263,7 +263,7 @@ def kafka_batch_dag():
             return batches
 
         except Exception as e:
-            print(f"\n❌ 에러: {str(e)}")
+            print(f"\n 에러: {str(e)}")
             import traceback
             traceback.print_exc()
             err_item = {"errors": [], "stage": "poll_msg"}
