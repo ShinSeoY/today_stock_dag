@@ -1,6 +1,6 @@
 from airflow.decorators import dag, task
 from datetime import datetime, timedelta, timezone
-from kafka import KafkaConsumer, KafkaProducer
+from kafka import KafkaConsumer, KafkaProducer, TopicPartition
 from playwright.sync_api import sync_playwright
 import json, os, time, asyncio, aiohttp
 from playwright.async_api import async_playwright, TimeoutError as PwTimeout
@@ -163,31 +163,44 @@ def kafka_batch_dag():
             consumer = KafkaConsumer(
                 bootstrap_servers=KAFKA_BROKERS,
                 group_id='airflow-consume-p6',
-                auto_offset_reset='earliest',
+                auto_offset_reset='earliest',          # 커밋 없을 때만 적용
                 enable_auto_commit=True,
                 auto_commit_interval_ms=1000,
                 value_deserializer=lambda x: json.loads(x.decode('utf-8')),
                 fetch_min_bytes=1,
-                fetch_max_wait_ms=500
+                fetch_max_wait_ms=500,
+                isolation_level='read_uncommitted',    # 트랜잭션 미커밋 가려짐 방지
+                request_timeout_ms=30000,
+                metadata_max_age_ms=10000,
+                session_timeout_ms=10000,
+                heartbeat_interval_ms=3000,
+                max_poll_records=200,
             )
-            consumer.subscribe([KAFKA_TOPIC])
-            
-            for _ in range(30):
-                consumer.poll(timeout_ms=200)  # 트리거
-                assn = consumer.assignment()
-                if assn:
-                    print(f'--- assignment: {assn}')
-                    break
-                time.sleep(0.2)
-            
+
+            # 1) 토픽/파티션 가시성 확인
+            parts = consumer.partitions_for_topic(KAFKA_TOPIC)
+            print(f'[poll_msg] partitions for {KAFKA_TOPIC}: {parts}')
+            if not parts:
+                raise RuntimeError(f"Topic '{KAFKA_TOPIC}' not visible")
+
+            # 2) 직접 배정 + 메타데이터 워밍업
+            tps = [TopicPartition(KAFKA_TOPIC, p) for p in parts]
+            consumer.assign(tps)
+            for _ in range(10):               # ← 메타 레이스 회피 (중요)
+                consumer.poll(timeout_ms=200)
+
+            # 3) 처음부터 읽기 시작
+            consumer.seek_to_beginning(*tps)
+
             end = time.monotonic() + TIMEOUT
             buffer, batches = [], []
 
             while time.monotonic() < end:
-                print(KAFKA_TOPIC)
-                print('---- 111')
                 polled = consumer.poll(timeout_ms=1000)
-                print(f'---- {len(polled.items())}')
+                got = sum(len(v) for v in polled.values())
+                print(f'[poll_msg] polled {got}')
+                if not polled:
+                    continue
                 for _, msgs in polled.items():
                     for m in msgs:
                         data = m.value
@@ -197,15 +210,14 @@ def kafka_batch_dag():
                             add_error(data, "poll_msg", f"missing keys: {missing}")
                         buffer.append(data)
                         if len(buffer) == MAX_BUFFER_SIZE:
-                            batches.append(buffer.copy()); 
-                            buffer.clear()
+                            batches.append(buffer.copy()); buffer.clear()
 
             if buffer:
                 batches.append(buffer.copy())
 
-            print(batches)
+            print(f'[poll_msg] batches={len(batches)}')
             consumer.close()
-            return batches  # List[List[dict]]
+            return batches
 
         except Exception as e:
             # 폴링 단계 전체 실패 → DLQ로 보낼 수 있도록 에러 item을 만들어 반환
