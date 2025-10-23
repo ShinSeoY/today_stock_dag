@@ -162,16 +162,15 @@ def kafka_batch_dag():
         try:
             consumer = KafkaConsumer(
                 bootstrap_servers=KAFKA_BROKERS,
-                group_id=None,                        # ← 그룹 사용 안 함 (중요)
-                enable_auto_commit=False,             # ← 커밋 끔
+                group_id=None,                 # 그룹 안 씀: 코디네이터/커밋 이슈 회피
+                enable_auto_commit=False,
                 auto_offset_reset='earliest',
-                value_deserializer=lambda x: json.loads(x.decode('utf-8')),
                 fetch_min_bytes=1,
                 fetch_max_wait_ms=500,
                 isolation_level='read_uncommitted',
                 request_timeout_ms=30000,
                 metadata_max_age_ms=10000,
-                max_poll_records=200,
+                max_poll_records=500,
             )
 
             parts = consumer.partitions_for_topic(KAFKA_TOPIC)
@@ -182,7 +181,7 @@ def kafka_batch_dag():
             tps = [TopicPartition(KAFKA_TOPIC, p) for p in parts]
             consumer.assign(tps)
 
-            # 메타데이터 워밍업 (kafka-python 레이스 회피)
+            # 메타데이터 워밍업
             for _ in range(10):
                 consumer.poll(timeout_ms=200)
 
@@ -193,13 +192,24 @@ def kafka_batch_dag():
             buffer, batches = [], []
 
             while time.monotonic() < end:
-                polled = consumer.poll(timeout_ms=1000)
+                polled = consumer.poll(timeout_ms=1000, max_records=500)
                 got = sum(len(v) for v in polled.values())
                 print(f'[poll_msg] polled {got}')
+                if not polled:
+                    continue
+
                 for _, msgs in polled.items():
                     for m in msgs:
-                        data = m.value
-                        print(f'----vvvv : {data}')
+                        # 역직렬화는 여기서
+                        try:
+                            data = json.loads(m.value.decode('utf-8'))
+                        except Exception as e:
+                            # 문제 생기면 다음 레코드 진행 (버퍼에 쓰지 않음)
+                            # todo raise exception
+                            print(f'[poll_msg] deserialization error at offset {m.offset}: {e}')
+                            continue
+
+                        print(f'[poll_msg] got offset={m.offset} value={data}')
                         missing, ok = has_required_keys(data)
                         if not ok:
                             add_error(data, "poll_msg", f"missing keys: {missing}")
@@ -218,8 +228,6 @@ def kafka_batch_dag():
             err_item = {"errors": [], "stage": "poll_msg"}
             add_error(err_item, "poll_msg", e)
             return [[err_item]]
-
-
 
     @task
     def process_batch(batch: list):
