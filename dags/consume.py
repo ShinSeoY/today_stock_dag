@@ -161,7 +161,6 @@ def kafka_batch_dag():
     def poll_msg():
         try:
             consumer = KafkaConsumer(
-                KAFKA_TOPIC,
                 bootstrap_servers=KAFKA_BROKERS,
                 group_id='airflow-consume-p6',
                 auto_offset_reset='earliest',
@@ -171,10 +170,21 @@ def kafka_batch_dag():
                 fetch_min_bytes=1,
                 fetch_max_wait_ms=500
             )
+            consumer.subscribe([KAFKA_TOPIC])
+            
+            for _ in range(30):
+                consumer.poll(timeout_ms=200)  # 트리거
+                assn = consumer.assignment()
+                if assn:
+                    print(f'--- assignment: {assn}')
+                    break
+                time.sleep(0.2)
+            
             end = time.monotonic() + TIMEOUT
             buffer, batches = [], []
 
             while time.monotonic() < end:
+                print(KAFKA_TOPIC)
                 print('---- 111')
                 polled = consumer.poll(timeout_ms=1000)
                 print(f'---- {len(polled.items())}')
