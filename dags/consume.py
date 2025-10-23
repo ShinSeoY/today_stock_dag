@@ -179,7 +179,7 @@ def kafka_batch_dag():
                 for _, msgs in polled.items():
                     for m in msgs:
                         data = m.value
-                        print('----vvvv : {data}')
+                        print(f'----vvvv : {data}')
                         missing, ok = has_required_keys(data)
                         if not ok:
                             add_error(data, "poll_msg", f"missing keys: {missing}")
