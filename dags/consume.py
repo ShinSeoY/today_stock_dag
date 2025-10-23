@@ -138,7 +138,7 @@ def kafka_batch_dag():
                 consumer_timeout_ms=10000
             )
             
-            # 🔑 파티션 수동 할당 - Coordinator 불필요!
+            # 파티션 수동 할당 - Coordinator 불필요!
             tp = TopicPartition(KAFKA_TOPIC, 0)
             consumer.assign([tp])
             consumer.seek_to_beginning(tp)
