@@ -175,7 +175,9 @@ def kafka_batch_dag():
             buffer, batches = [], []
 
             while time.monotonic() < end:
+                print('---- 111')
                 polled = consumer.poll(timeout_ms=1000)
+                print(f'---- {len(polled.items())}')
                 for _, msgs in polled.items():
                     for m in msgs:
                         data = m.value
