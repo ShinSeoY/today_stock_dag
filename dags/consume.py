@@ -163,7 +163,7 @@ def kafka_batch_dag():
             consumer = KafkaConsumer(
                 KAFKA_TOPIC,
                 bootstrap_servers=KAFKA_BROKERS,
-                group_id='airflow-consume-p1',
+                group_id='airflow-consume-p2',
                 auto_offset_reset='earliest',
                 enable_auto_commit=True,
                 auto_commit_interval_ms=1000,
