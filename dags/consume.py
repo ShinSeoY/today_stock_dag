@@ -162,13 +162,13 @@ def kafka_batch_dag():
     def poll_msg():
         consumer = KafkaConsumer(
             bootstrap_servers=KAFKA_BROKERS,
-            group_id='airflow-consume-p2',              # 임시 그룹
+            group_id='airflow-consume-p3',              # 임시 그룹
             enable_auto_commit=False,                   # 디버깅시 수동 커밋
             auto_offset_reset='earliest',
             value_deserializer=lambda x: json.loads(x.decode('utf-8')),
         )
 
-        tp = TopicPartition(KAFKA_TOPIC, 0)
+        tp = TopicPartition(KAFKA_TOPIC, 1)
         consumer.assign([tp])
 
         # 시작/끝 오프셋 로깅
