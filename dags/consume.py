@@ -179,11 +179,8 @@ def kafka_batch_dag():
                 raise RuntimeError(f"Topic '{KAFKA_TOPIC}' not visible")
 
             tps = [TopicPartition(KAFKA_TOPIC, p) for p in parts]
+            print(tps)
             consumer.assign(tps)
-
-            # 메타데이터 워밍업
-            for _ in range(10):
-                consumer.poll(timeout_ms=200)
 
             # 항상 처음부터 읽기 (그룹 안 쓰므로 커밋 이슈 없음)
             consumer.seek_to_beginning(*tps)
