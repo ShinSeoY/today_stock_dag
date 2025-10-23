@@ -162,10 +162,8 @@ def kafka_batch_dag():
         try:
             consumer = KafkaConsumer(
                 bootstrap_servers=KAFKA_BROKERS,
-                enable_auto_commit=True,
-                group_id='airflow-consume-p2',
-                # group_id=None,                 # 그룹 안 씀: 코디네이터/커밋 이슈 회피
-                # enable_auto_commit=False,
+                group_id=None,                 # 그룹 안 씀: 코디네이터/커밋 이슈 회피
+                enable_auto_commit=False,
                 auto_offset_reset='earliest',
                 fetch_min_bytes=1,
                 fetch_max_wait_ms=500,
@@ -186,7 +184,7 @@ def kafka_batch_dag():
             consumer.assign(tps)
 
             # 항상 처음부터 읽기 (그룹 안 쓰므로 커밋 이슈 없음)
-            # consumer.seek_to_beginning(*tps)
+            consumer.seek_to_beginning(*tps)
 
             end = time.monotonic() + TIMEOUT
             buffer, batches = [], []
