@@ -167,6 +167,7 @@ def kafka_batch_dag():
                 auto_offset_reset='earliest',
                 fetch_min_bytes=1,
                 fetch_max_wait_ms=500,
+                value_deserializer=lambda x: json.loads(x.decode('utf-8')),
                 isolation_level='read_uncommitted',
                 request_timeout_ms=30000,
                 metadata_max_age_ms=10000,
@@ -197,14 +198,15 @@ def kafka_batch_dag():
 
                 for _, msgs in polled.items():
                     for m in msgs:
+                        data = m.value
                         # 역직렬화는 여기서
-                        try:
-                            data = json.loads(m.value.decode('utf-8'))
-                        except Exception as e:
-                            # 문제 생기면 다음 레코드 진행 (버퍼에 쓰지 않음)
-                            # todo raise exception
-                            print(f'[poll_msg] deserialization error at offset {m.offset}: {e}')
-                            continue
+                        # try:
+                        #     data = json.loads(m.value.decode('utf-8'))
+                        # except Exception as e:
+                        #     # 문제 생기면 다음 레코드 진행 (버퍼에 쓰지 않음)
+                        #     # todo raise exception
+                        #     print(f'[poll_msg] deserialization error at offset {m.offset}: {e}')
+                        #     continue
 
                         print(f'[poll_msg] got offset={m.offset} value={data}')
                         missing, ok = has_required_keys(data)
@@ -212,7 +214,8 @@ def kafka_batch_dag():
                             add_error(data, "poll_msg", f"missing keys: {missing}")
                         buffer.append(data)
                         if len(buffer) == MAX_BUFFER_SIZE:
-                            batches.append(buffer.copy()); buffer.clear()
+                            batches.append(buffer.copy()); 
+                            buffer.clear()
 
             if buffer:
                 batches.append(buffer.copy())
