@@ -162,34 +162,31 @@ def kafka_batch_dag():
         try:
             consumer = KafkaConsumer(
                 bootstrap_servers=KAFKA_BROKERS,
-                group_id='airflow-consume-p6',
-                auto_offset_reset='earliest',          # 커밋 없을 때만 적용
-                enable_auto_commit=True,
-                auto_commit_interval_ms=1000,
+                group_id=None,                        # ← 그룹 사용 안 함 (중요)
+                enable_auto_commit=False,             # ← 커밋 끔
+                auto_offset_reset='earliest',
                 value_deserializer=lambda x: json.loads(x.decode('utf-8')),
                 fetch_min_bytes=1,
                 fetch_max_wait_ms=500,
-                isolation_level='read_uncommitted',    # 트랜잭션 미커밋 가려짐 방지
+                isolation_level='read_uncommitted',
                 request_timeout_ms=30000,
                 metadata_max_age_ms=10000,
-                session_timeout_ms=10000,
-                heartbeat_interval_ms=3000,
                 max_poll_records=200,
             )
 
-            # 1) 토픽/파티션 가시성 확인
             parts = consumer.partitions_for_topic(KAFKA_TOPIC)
             print(f'[poll_msg] partitions for {KAFKA_TOPIC}: {parts}')
             if not parts:
                 raise RuntimeError(f"Topic '{KAFKA_TOPIC}' not visible")
 
-            # 2) 직접 배정 + 메타데이터 워밍업
             tps = [TopicPartition(KAFKA_TOPIC, p) for p in parts]
             consumer.assign(tps)
-            for _ in range(10):               # ← 메타 레이스 회피 (중요)
+
+            # 메타데이터 워밍업 (kafka-python 레이스 회피)
+            for _ in range(10):
                 consumer.poll(timeout_ms=200)
 
-            # 3) 처음부터 읽기 시작
+            # 항상 처음부터 읽기 (그룹 안 쓰므로 커밋 이슈 없음)
             consumer.seek_to_beginning(*tps)
 
             end = time.monotonic() + TIMEOUT
@@ -199,8 +196,6 @@ def kafka_batch_dag():
                 polled = consumer.poll(timeout_ms=1000)
                 got = sum(len(v) for v in polled.values())
                 print(f'[poll_msg] polled {got}')
-                if not polled:
-                    continue
                 for _, msgs in polled.items():
                     for m in msgs:
                         data = m.value
@@ -220,10 +215,10 @@ def kafka_batch_dag():
             return batches
 
         except Exception as e:
-            # 폴링 단계 전체 실패 → DLQ로 보낼 수 있도록 에러 item을 만들어 반환
             err_item = {"errors": [], "stage": "poll_msg"}
             add_error(err_item, "poll_msg", e)
             return [[err_item]]
+
 
 
     @task
