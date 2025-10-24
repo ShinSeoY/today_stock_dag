@@ -145,6 +145,20 @@ async def crawl_batch_async(batch: list, concurrency: int = 5, headless: bool = 
         await browser.close()
         return results
 
+# 공통 Producer 설정 함수
+def create_producer():
+    return KafkaProducer(
+        bootstrap_servers=KAFKA_BROKERS,
+        value_serializer=lambda v: json.dumps(v, ensure_ascii=False).encode('utf-8'),
+        # 재시도 설정
+        retries=5,
+        retry_backoff_ms=500,
+        # 메타데이터 갱신
+        metadata_max_age_ms=30000,  # 30초
+        # 안정성 강화
+        request_timeout_ms=30000,
+    )
+
 @dag(
     dag_id='consume_and_process_dag',
     start_date=datetime(2025, 8, 3),
@@ -249,10 +263,7 @@ def kafka_batch_dag():
                 # 조건에 맞는 아이템만 필터링
                 valid_items = valid_batch(batch)
                 
-                producer = KafkaProducer(
-                    bootstrap_servers=KAFKA_BROKERS,
-                    value_serializer=lambda v: json.dumps(v, ensure_ascii=False).encode('utf-8')
-                )
+                producer = create_producer()
                 
                 # 조건에 맞지 않는 아이템들은 성공 처리 (이메일 발송 불필요)
                 for item in batch:
@@ -306,10 +317,7 @@ def kafka_batch_dag():
     # Kafka로 결과 발행
     @task
     def produce_result(batch_results: list):
-        producer = KafkaProducer(
-            bootstrap_servers=KAFKA_BROKERS,
-            value_serializer=lambda v: json.dumps(v, ensure_ascii=False).encode('utf-8')
-        )
+        producer = create_producer()
         for item in batch_results:
             # 성공 기준: 누적 오류가 없고, 수집/발송이 모두 성공
             errors = item.get("errors", [])
