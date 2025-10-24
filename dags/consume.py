@@ -176,8 +176,11 @@ def kafka_batch_dag():
         try:
             consumer = KafkaConsumer(
                 bootstrap_servers=KAFKA_BROKERS,
-                group_id=None,                 # 그룹 안 씀: 코디네이터/커밋 이슈 회피
-                enable_auto_commit=False,
+                group_id='airflow-consume',
+                enable_auto_commit=True,
+                auto_commit_interval_ms=1000,
+                # group_id=None,                 # 그룹 안 씀: 코디네이터/커밋 이슈 회피
+                # enable_auto_commit=False,
                 auto_offset_reset='earliest',
                 fetch_min_bytes=1,
                 fetch_max_wait_ms=500,
@@ -188,17 +191,17 @@ def kafka_batch_dag():
                 max_poll_records=500,
             )
 
-            parts = consumer.partitions_for_topic(KAFKA_TOPIC)
-            print(f'[poll_msg] partitions for {KAFKA_TOPIC}: {parts}')
-            if not parts:
-                raise RuntimeError(f"Topic '{KAFKA_TOPIC}' not visible")
+            # parts = consumer.partitions_for_topic(KAFKA_TOPIC)
+            # print(f'[poll_msg] partitions for {KAFKA_TOPIC}: {parts}')
+            # if not parts:
+            #     raise RuntimeError(f"Topic '{KAFKA_TOPIC}' not visible")
 
-            tps = [TopicPartition(KAFKA_TOPIC, p) for p in parts]
-            print(tps)
-            consumer.assign(tps)
+            # tps = [TopicPartition(KAFKA_TOPIC, p) for p in parts]
+            # print(tps)
+            # consumer.assign(tps)
 
-            # 항상 처음부터 읽기 (그룹 안 쓰므로 커밋 이슈 없음)
-            consumer.seek_to_beginning(*tps)
+            # # 항상 처음부터 읽기 (그룹 안 쓰므로 커밋 이슈 없음)
+            # consumer.seek_to_beginning(*tps)
 
             end = time.monotonic() + TIMEOUT
             buffer, batches = [], []
