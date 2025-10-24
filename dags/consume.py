@@ -191,14 +191,14 @@ def kafka_batch_dag():
                 max_poll_records=500,
             )
 
-            # parts = consumer.partitions_for_topic(KAFKA_TOPIC)
-            # print(f'[poll_msg] partitions for {KAFKA_TOPIC}: {parts}')
-            # if not parts:
-            #     raise RuntimeError(f"Topic '{KAFKA_TOPIC}' not visible")
+            parts = consumer.partitions_for_topic(KAFKA_TOPIC)
+            print(f'[poll_msg] partitions for {KAFKA_TOPIC}: {parts}')
+            if not parts:
+                raise RuntimeError(f"Topic '{KAFKA_TOPIC}' not visible")
 
-            # tps = [TopicPartition(KAFKA_TOPIC, p) for p in parts]
-            # print(tps)
-            # consumer.assign(tps)
+            tps = [TopicPartition(KAFKA_TOPIC, p) for p in parts]
+            print(tps)
+            consumer.assign(tps)
 
             # # 항상 처음부터 읽기 (그룹 안 쓰므로 커밋 이슈 없음)
             # consumer.seek_to_beginning(*tps)
