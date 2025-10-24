@@ -173,7 +173,7 @@ def kafka_batch_dag():
                 fetch_min_bytes=1,
                 fetch_max_wait_ms=500,
                 value_deserializer=lambda x: json.loads(x.decode('utf-8')),
-                request_timeout_ms=30000,
+                request_timeout_ms=60000,
                 metadata_max_age_ms=30000,
                 max_poll_records=500,
                 session_timeout_ms=30000,
