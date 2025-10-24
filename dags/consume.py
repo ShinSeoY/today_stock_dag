@@ -281,6 +281,7 @@ def kafka_batch_dag():
                         producer.send(KAFKA_TOPIC, value=item)
                     except Exception as e:
                         add_error(item, "requeue", e)
+                producer.flush()
                     
                 timeout = aiohttp.ClientTimeout(total=30)
                 async with aiohttp.ClientSession(timeout=timeout) as session:
@@ -310,6 +311,9 @@ def kafka_batch_dag():
                     it.setdefault("emailed", False)
                     safe.append(it)
                 return safe
+            finally:
+                producer.flush()
+                producer.close()
 
         return asyncio.run(send_all())
 
