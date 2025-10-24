@@ -1,10 +1,8 @@
 from airflow.decorators import dag, task
 from datetime import datetime, timedelta, timezone
-from kafka import KafkaConsumer, KafkaProducer, TopicPartition
-from playwright.sync_api import sync_playwright
+from kafka import KafkaConsumer, KafkaProducer
 import json, os, time, asyncio, aiohttp
-from playwright.async_api import async_playwright, TimeoutError as PwTimeout
-import nest_asyncio
+from playwright.async_api import async_playwright
 import re
 from urllib.parse import urljoin
 
@@ -51,12 +49,12 @@ def get_valid_price(txt) -> str | None:
     m = re.search(r'\d[\d,\.]*', txt)
     if not m:
         return None
-    return re.sub(r'[,]', '', m.group(0)) 
+    return re.sub(r'[,]', '', m.group(0))
 
 async def _extract_price(page) -> str | None:
     for sel in PRICE_SELECTORS:
         try:
-            loc = page.locator(sel).first 
+            loc = page.locator(sel).first
             await loc.wait_for(state="visible", timeout=8000)
             txt = (await loc.inner_text() or "").strip()
             v = get_valid_price(txt)
@@ -73,7 +71,6 @@ async def _crawl_one(ctx, item: dict) -> dict:
         
         price = await _extract_price(page)
         if not price:
-            # 1회 재시도
             await page.reload(wait_until="load", timeout=20_000)
             price = await _extract_price(page)
 
@@ -96,34 +93,26 @@ async def _crawl_one(ctx, item: dict) -> dict:
 """크롤링 완료 후 조건 확인하여 이메일 발송이 필요한 데이터만 필터링"""
 def valid_batch(batch: list) -> list:
     result = []
-    
     for item in batch:
         if not isinstance(item, dict):
             continue
-
         if not item.get('crawled') or not item.get('collectedPrice'):
             continue
-            
         try:
             req_price = item.get('requestPrice')
             col_price = item.get('collectedPrice')
             condition = item.get('conditionType')
-            
             if not all([req_price, col_price, condition]):
                 continue
-                
             req = float(req_price)
             col = float(col_price)
-            
             if condition == 'GTE' and col >= req:
                 result.append(item)
             elif condition == 'LTE' and col <= req:
                 result.append(item)
-                
         except (ValueError, TypeError) as e:
             add_error(item, "valid_batch", f"Invalid number format: {e}")
             continue
-            
     return result
 
 async def crawl_batch_async(batch: list, concurrency: int = 5, headless: bool = True) -> list:
@@ -134,12 +123,12 @@ async def crawl_batch_async(batch: list, concurrency: int = 5, headless: bool = 
             args=["--no-sandbox", "--disable-gpu"]
         )
         ctx = await browser.new_context(**device, locale="ko-KR", timezone_id="Asia/Seoul")
-
         sem = asyncio.Semaphore(concurrency)
+        
         async def runner(item):
             async with sem:
                 return await _crawl_one(ctx, dict(item))
-            
+        
         results = await asyncio.gather(*[asyncio.create_task(runner(it)) for it in batch])
         await ctx.close()
         await browser.close()
@@ -175,34 +164,22 @@ def kafka_batch_dag():
     def poll_msg():
         try:
             consumer = KafkaConsumer(
+                KAFKA_TOPIC,
                 bootstrap_servers=KAFKA_BROKERS,
-                # group_id='airflow-consume',
-                # enable_auto_commit=True,
-                # auto_commit_interval_ms=1000,
-                group_id=None,                 # 그룹 안 씀: 코디네이터/커밋 이슈 회피
-                enable_auto_commit=False,
-                auto_offset_reset='earliest',
+                group_id='airflow-consumer-group',
+                enable_auto_commit=True,
+                auto_commit_interval_ms=5000,  # 5초마다 자동 커밋
+                auto_offset_reset='earliest',  # 최초에만 처음부터
                 fetch_min_bytes=1,
                 fetch_max_wait_ms=500,
                 value_deserializer=lambda x: json.loads(x.decode('utf-8')),
-                isolation_level='read_uncommitted',
                 request_timeout_ms=30000,
-                metadata_max_age_ms=10000,
+                metadata_max_age_ms=30000,
                 max_poll_records=500,
+                session_timeout_ms=30000,
+                heartbeat_interval_ms=10000,
             )
-
-            parts = consumer.partitions_for_topic(KAFKA_TOPIC)
-            print(f'[poll_msg] partitions for {KAFKA_TOPIC}: {parts}')
-            if not parts:
-                raise RuntimeError(f"Topic '{KAFKA_TOPIC}' not visible")
-
-            tps = [TopicPartition(KAFKA_TOPIC, p) for p in parts]
-            print(tps)
-            consumer.assign(tps)
-
-            # 항상 처음부터 읽기 (그룹 안 쓰므로 커밋 이슈 없음)
-            consumer.seek_to_beginning(*tps)
-
+            
             end = time.monotonic() + TIMEOUT
             buffer, batches = [], []
 
@@ -210,30 +187,33 @@ def kafka_batch_dag():
                 polled = consumer.poll(timeout_ms=1000, max_records=500)
                 got = sum(len(v) for v in polled.values())
                 print(f'[poll_msg] polled {got}')
+                
                 if not polled:
                     continue
 
                 for _, msgs in polled.items():
                     for m in msgs:
                         data = m.value
-
-                        print(f'[poll_msg] got offset={m.offset} value={data}')
+                        print(f'[poll_msg] offset={m.offset} partition={m.partition}')
+                        
                         missing, ok = has_required_keys(data)
                         if not ok:
                             add_error(data, "poll_msg", f"missing keys: {missing}")
+                        
                         buffer.append(data)
                         if len(buffer) == MAX_BUFFER_SIZE:
-                            batches.append(buffer.copy()); 
+                            batches.append(buffer.copy())
                             buffer.clear()
 
             if buffer:
                 batches.append(buffer.copy())
 
-            print(f'[poll_msg] batches={len(batches)}')
+            print(f'[poll_msg] total batches={len(batches)}')
             consumer.close()
             return batches
 
         except Exception as e:
+            print(f'[poll_msg] ERROR: {e}')
             err_item = {"errors": [], "stage": "poll_msg"}
             add_error(err_item, "poll_msg", e)
             return [[err_item]]
@@ -257,22 +237,21 @@ def kafka_batch_dag():
                 add_error(safe[0], "process_batch", e)
             return safe
 
-
-    # 이메일 발송 분리 Task
     @task
     def send_email_batch(batch: list):
+        producer = None
+        
         async def send_all():
+            nonlocal producer
             try:
                 # 조건에 맞는 아이템만 필터링
                 valid_items = valid_batch(batch)
-                
                 producer = create_producer()
                 
                 # 조건에 맞지 않는 아이템들은 성공 처리 (이메일 발송 불필요)
                 for item in batch:
                     if item in valid_items:
                         continue
-
                     item["emailed"] = False
                     item["skipReason"] = "condition not met"
 
@@ -284,8 +263,10 @@ def kafka_batch_dag():
                         producer.send(KAFKA_TOPIC, value=item)
                     except Exception as e:
                         add_error(item, "requeue", e)
+                
                 producer.flush()
-                    
+                
+                # 이메일 발송
                 timeout = aiohttp.ClientTimeout(total=30)
                 async with aiohttp.ClientSession(timeout=timeout) as session:
                     # 조건에 맞는 아이템들만 실제 이메일 발송
@@ -299,11 +280,11 @@ def kafka_batch_dag():
                                     if not item["emailed"]:
                                         add_error(item, "send_email", f"http {resp.status}")
                             else:
-                                add_error(item, "send_email", "collectedPrice is empty; skipped email")
+                                add_error(item, "send_email", "collectedPrice is empty")
                         except Exception as e:
                             add_error(item, "send_email", e)
                             item["emailed"] = False
-                            
+                
                 return batch
                 
             except Exception as e:
@@ -314,9 +295,14 @@ def kafka_batch_dag():
                     it.setdefault("emailed", False)
                     safe.append(it)
                 return safe
+            
             finally:
-                producer.flush()
-                producer.close()
+                if producer:
+                    try:
+                        producer.flush()
+                        producer.close()
+                    except Exception as e:
+                        print(f"Producer close error: {e}")
 
         return asyncio.run(send_all())
 
