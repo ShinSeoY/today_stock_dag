@@ -5,23 +5,51 @@ import json, os, time, asyncio, aiohttp
 from playwright.async_api import async_playwright
 import re
 from urllib.parse import urljoin
+import redis
 
-# 환경 변수
+# redis 설정
+REDIS_HOST = os.getenv("REDIS_HOST")
+REDIS_PORT = int(os.getenv("REDIS_PORT"))
+REDIS_DB   = int(os.getenv("REDIS_DB"))
+REDIS_PASSWORD = os.getenv("REDIS_PASSWORD")
+
+# kafka 설정
 KAFKA_HOST = os.getenv("KAFKA_HOST")
 # KAFKA_BROKERS = [f'{KAFKA_HOST}1:19091', f'{KAFKA_HOST}2:19092', f'{KAFKA_HOST}3:19093']
 KAFKA_BROKERS = [KAFKA_HOST]
 KAFKA_TOPIC = os.getenv("KAFKA_TOPIC")
 KAFKA_SUCCESS_TOPIC = os.getenv("KAFKA_SUCCESS_TOPIC")
 KAFKA_FAIL_TOPIC = os.getenv("KAFKA_FAIL_TOPIC")
+
 API_SERVER_HOST = os.getenv("API_SERVER_HOST")
 MAX_BUFFER_SIZE = 10
 TIMEOUT = 55  # 초
+PRICE_SELECTORS = [
+    'strong[class^="GraphMain_price"]',
+    'strong[class*=" GraphMain_price"]',
+    'strong[class^="Price_article__"]',
+    'strong[class*=" Price_article__"]',
+]
 
 default_args = {
     'owner': 'airflow',
     'retries': 1,
     'retry_delay': timedelta(seconds=10),
 }
+
+rds = redis.Redis(
+    host=REDIS_HOST, port=REDIS_PORT, db=REDIS_DB,
+    password=REDIS_PASSWORD, decode_responses=True
+)
+
+def build_keys(item: dict) -> tuple[str, str] | tuple[None, None]:
+    email = item.get("memberEmail")
+    prov  = item.get("memberProvider")
+    code  = item.get("code")
+    if not all([email, prov, code]):
+        return None, None
+    base = f"todaystock:{email}:{prov}:{code}"
+    return base, f"{base}:lock"
 
 def add_error(item: dict, stage: str, exc: Exception | str):
     if not isinstance(exc, str):
@@ -35,13 +63,6 @@ def add_error(item: dict, stage: str, exc: Exception | str):
 def has_required_keys(d: dict, keys=("requestUrl", "requestEmail")):
     missing = [k for k in keys if k not in d]
     return missing, len(missing) == 0
-
-PRICE_SELECTORS = [
-    'strong[class^="GraphMain_price"]',
-    'strong[class*=" GraphMain_price"]',
-    'strong[class^="Price_article__"]',
-    'strong[class*=" Price_article__"]',
-]
 
 def get_valid_price(txt) -> str | None:
     if not txt:
@@ -245,34 +266,52 @@ def kafka_batch_dag():
         async def send_all():
             nonlocal producer
             try:
-                # 조건에 맞는 아이템만 필터링
+                # 조건에 맞는 아이템
                 valid_items = valid_batch(batch)
                 producer = create_producer()
-                
-                # 조건에 맞지 않는 아이템들은 성공 처리 (이메일 발송 불필요)
+
+                # 조건에 맞지 않는 아이템 → 재큐잉 전 이전 해시값 체크
                 for item in batch:
                     if item in valid_items:
                         continue
+
                     item["emailed"] = False
                     item["skipReason"] = "condition not met"
 
-                    # 재시도 메타 (루프 방지용)
+                    msg_hash = item.get("configHash")
+                    base_key, lock_key = build_keys(item)
+                    if not lock_key or not msg_hash:
+                        # 키 생성 불가 or 해시 없음 -> 드랍
+                        item["skipReason"] = "missing_key_or_hash"
+                        print(f'missing_key_or_hash : {item}')
+                        continue
+
+                    try:
+                        curr_hash = rds.get(lock_key)
+                    except Exception as e:
+                        add_error(item, "redis_get_lock", e)
+                        # Redis 조회 실패 시 보수적으로 재큐잉
+                        curr_hash = msg_hash
+
+                    if curr_hash != msg_hash:
+                        # 구버전(신규 값으로 업데이트된 상태) → 드랍
+                        item["skipReason"] = "stale_value"
+                        print(f'stale_value : {item}')
+                        continue
+
+                    # 같은 버전일 때만 재큐잉(기존 로직 유지)
                     rc = int(item.get("retryCount", 0))
                     item["retryCount"] = rc + 1
-                    
                     try:
                         producer.send(KAFKA_TOPIC, value=item)
-                        # lock 걸기
-                        
                     except Exception as e:
                         add_error(item, "requeue", e)
-                
+
                 producer.flush()
-                
-                # 이메일 발송
+
+                # 유효한 아이템들만 이메일 발송
                 timeout = aiohttp.ClientTimeout(total=30)
                 async with aiohttp.ClientSession(timeout=timeout) as session:
-                    # 조건에 맞는 아이템들만 실제 이메일 발송
                     for item in valid_items:
                         item.setdefault("emailed", False)
                         try:
@@ -287,9 +326,9 @@ def kafka_batch_dag():
                         except Exception as e:
                             add_error(item, "send_email", e)
                             item["emailed"] = False
-                
+
                 return batch
-                
+
             except Exception as e:
                 safe = []
                 for it in (batch or []):
@@ -298,7 +337,6 @@ def kafka_batch_dag():
                     it.setdefault("emailed", False)
                     safe.append(it)
                 return safe
-            
             finally:
                 if producer:
                     try:
@@ -308,6 +346,7 @@ def kafka_batch_dag():
                         print(f"Producer close error: {e}")
 
         return asyncio.run(send_all())
+
 
 
     # Kafka로 결과 발행

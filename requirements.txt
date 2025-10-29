@@ -5,3 +5,4 @@ aiohttp==3.12.14
 nest-asyncio==1.6.0
 requests==2.31.0
 apache-airflow==2.9.1
+redis==5.0.7
