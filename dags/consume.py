@@ -66,6 +66,7 @@ async def _extract_price(page) -> str | None:
 async def _crawl_one(ctx, item: dict) -> dict:
     page = await ctx.new_page()
     try:
+        print(f"_crawl_one : {item['requestUrl']}")
         url = urljoin("https://m.stock.naver.com/", item["requestUrl"].lstrip("/"))
         await page.goto(url, timeout=45_000, wait_until="domcontentloaded")
         
