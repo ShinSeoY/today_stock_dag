@@ -116,7 +116,7 @@ def valid_batch(batch: list) -> list:
             continue
     return result
 
-async def crawl_batch_async(batch: list, concurrency: int = 10, headless: bool = True) -> list:
+async def crawl_batch_async(batch: list, concurrency: int = 5, headless: bool = True) -> list:
     async with async_playwright() as p:
         device = p.devices.get("iPhone 13 Pro") or p.devices["iPhone 12 Pro"]
         browser = await p.chromium.launch(
@@ -262,6 +262,8 @@ def kafka_batch_dag():
                     
                     try:
                         producer.send(KAFKA_TOPIC, value=item)
+                        # lock 걸기
+                        
                     except Exception as e:
                         add_error(item, "requeue", e)
                 
