@@ -59,6 +59,12 @@ def build_keys(item: dict) -> tuple[str, str] | tuple[None, None]:
     base = f"todaystock:{email}:{prov}:{code}"
     return base, f"{base}:lock"
 
+def _norm_hash(v: str | None) -> str:
+    if v is None:
+        return ""
+    # 문자열 양끝 공백/개행/따옴표 제거 + 소문자 통일
+    return str(v).strip().strip('"').strip("'").lower()
+
 def add_error(item: dict, stage: str, exc: Exception | str):
     if not isinstance(exc, str):
         exc = str(exc)
@@ -287,7 +293,6 @@ def kafka_batch_dag():
                     item["skipReason"] = "condition not met"
 
                     msg_hash = item.get("configHash")
-                    print(f'--------------------------- msg_hash {msg_hash}')
                     base_key, lock_key = build_keys(item)
                     if not lock_key or not msg_hash:
                         # 키 생성 불가 or 해시 없음 -> 드랍
@@ -302,9 +307,9 @@ def kafka_batch_dag():
                         add_error(item, "redis_get_lock", e)
                         # Redis 조회 실패 시 보수적으로 재큐잉
                         curr_hash = msg_hash
-                    print(f'--------------------------- curr_hash {curr_hash}')
-
-                    if curr_hash != msg_hash:
+                    print(_norm_hash(curr_hash))
+                    print(_norm_hash(msg_hash))
+                    if _norm_hash(curr_hash) != _norm_hash(msg_hash):
                         # 구버전(신규 값으로 업데이트된 상태) → 드랍
                         item["skipReason"] = "stale_value"
                         print(f'stale_value : {item}')
