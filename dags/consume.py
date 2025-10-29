@@ -37,10 +37,18 @@ default_args = {
     'retry_delay': timedelta(seconds=10),
 }
 
-rds = redis.Redis(
-    host=REDIS_HOST, port=REDIS_PORT, db=REDIS_DB,
-    password=REDIS_PASSWORD, decode_responses=True
-)
+_rds = None
+def get_rds():
+    global _rds
+    if _rds is None:
+        _rds = redis.Redis(
+            host=os.getenv("REDIS_HOST"),
+            port=int(os.getenv("REDIS_PORT")),
+            db=int(os.getenv("REDIS_DB")),
+            password=os.getenv("REDIS_PASSWORD"),
+            decode_responses=True,
+        )
+    return _rds
 
 def build_keys(item: dict) -> tuple[str, str] | tuple[None, None]:
     email = item.get("memberEmail")
@@ -287,6 +295,7 @@ def kafka_batch_dag():
                         continue
 
                     try:
+                        rds = get_rds()
                         curr_hash = rds.get(lock_key)
                     except Exception as e:
                         add_error(item, "redis_get_lock", e)
