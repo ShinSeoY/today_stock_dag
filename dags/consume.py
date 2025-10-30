@@ -10,7 +10,7 @@ import redis
 # redis 설정
 REDIS_HOST = os.getenv("REDIS_HOST")
 REDIS_PORT = int(os.getenv("REDIS_PORT"))
-REDIS_DB   = int(os.getenv("REDIS_DB"))
+REDIS_DB = int(os.getenv("REDIS_DB"))
 REDIS_PASSWORD = os.getenv("REDIS_PASSWORD")
 
 # kafka 설정
@@ -53,10 +53,10 @@ def get_rds():
 def build_keys(item: dict) -> tuple[str, str] | tuple[None, None]:
     email = item.get("memberEmail")
     prov  = item.get("memberProvider")
-    code  = item.get("code")
-    if not all([email, prov, code]):
+    configHash  = item.get("configHash")
+    if not all([email, prov, configHash]):
         return None, None
-    base = f"todaystock:{email}:{prov}:{code}"
+    base = f"todaystock:{email}:{prov}:{configHash}"
     return base, f"{base}:lock"
 
 def _norm_hash(v: str | None) -> str:
@@ -307,8 +307,7 @@ def kafka_batch_dag():
                         add_error(item, "redis_get_lock", e)
                         # Redis 조회 실패 시 보수적으로 재큐잉
                         curr_hash = msg_hash
-                    print(_norm_hash(curr_hash))
-                    print(_norm_hash(msg_hash))
+
                     if _norm_hash(curr_hash) != _norm_hash(msg_hash):
                         # 구버전(신규 값으로 업데이트된 상태) → 드랍
                         item["skipReason"] = "stale_value"
