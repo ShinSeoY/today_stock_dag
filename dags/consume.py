@@ -59,12 +59,6 @@ def build_keys(item: dict) -> tuple[str, str] | tuple[None, None]:
     base = f"todaystock:{email}:{prov}:{configHash}"
     return base, f"{base}:lock"
 
-def _norm_hash(v: str | None) -> str:
-    if v is None:
-        return ""
-    # 문자열 양끝 공백/개행/따옴표 제거 + 소문자 통일
-    return str(v).strip().strip('"').strip("'").lower()
-
 def add_error(item: dict, stage: str, exc: Exception | str):
     if not isinstance(exc, str):
         exc = str(exc)
@@ -284,7 +278,7 @@ def kafka_batch_dag():
                 valid_items = valid_batch(batch)
                 producer = create_producer()
 
-                # 조건에 맞지 않는 아이템 → 재큐잉 전 이전 해시값 체크
+                # 조건에 맞지 않는 아이템 → 재큐잉 전 삭제여부 체크
                 for item in batch:
                     if item in valid_items:
                         continue
@@ -303,18 +297,15 @@ def kafka_batch_dag():
                     try:
                         rds = get_rds()
                         curr_hash = rds.get(lock_key)
+                        if curr_hash is None:
+                            # 삭제된 알림 → 드랍
+                            item["skipReason"] = "deleted_value"
+                            print(f'deleted_value : {item}')
+                            continue
                     except Exception as e:
                         add_error(item, "redis_get_lock", e)
-                        # Redis 조회 실패 시 보수적으로 재큐잉
-                        curr_hash = msg_hash
 
-                    if _norm_hash(curr_hash) != _norm_hash(msg_hash):
-                        # 구버전(신규 값으로 업데이트된 상태) → 드랍
-                        item["skipReason"] = "stale_value"
-                        print(f'stale_value : {item}')
-                        continue
-
-                    # 같은 버전일 때만 재큐잉(기존 로직 유지)
+                    # 재큐잉
                     rc = int(item.get("retryCount", 0))
                     item["retryCount"] = rc + 1
                     try:
@@ -328,6 +319,20 @@ def kafka_batch_dag():
                 timeout = aiohttp.ClientTimeout(total=30)
                 async with aiohttp.ClientSession(timeout=timeout) as session:
                     for item in valid_items:
+                        
+                        base_key, lock_key = build_keys(item)
+                        
+                        try:
+                            rds = get_rds()
+                            curr_hash = rds.get(lock_key)
+                            if curr_hash is None:
+                                # 삭제된 알림 → 드랍
+                                item["skipReason"] = "deleted_value"
+                                print(f'deleted_value : {item}')
+                                continue
+                        except Exception as e:
+                            add_error(item, "redis_get_lock", e)
+                        
                         item.setdefault("emailed", False)
                         try:
                             payload = item.copy()
