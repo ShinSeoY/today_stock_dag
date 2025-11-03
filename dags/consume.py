@@ -185,7 +185,8 @@ def create_producer():
     catchup=False,
     default_args=default_args,
     tags=['kafka', 'batch', 'email'],
-    max_active_runs=2,
+    max_active_runs=2, # dag 동시 실행 수
+    max_active_tasks=10 # task 동시 실행 수
 )
 def kafka_batch_dag():
     
